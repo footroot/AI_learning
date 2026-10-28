@@ -2,10 +2,11 @@ import re
 from pathlib import Path
 
 import streamlit as st
-from openai import OpenAI, OpenAIError
+from google import genai
+from google.genai.errors import APIError
 from streamlit.errors import StreamlitSecretNotFoundError
 
-MODEL_NAME = "gpt-4o-mini"
+MODEL_NAME = "gemini-3.8-flash"
 APP_DIR = Path(__file__).resolve().parent
 
 st.set_page_config(page_title="mytaller.info AI assistant")
@@ -45,15 +46,15 @@ if not documents:
     st.stop()
 
 try:
-    api_key = st.secrets["OPENAI_API_KEY"]
+    api_key = st.secrets["GEMINI_API_KEY"]
 except (KeyError, StreamlitSecretNotFoundError):
     st.error(
-        "OpenAI API key is not configured. Add OPENAI_API_KEY to "
+        "Gemini API key is not configured. Add GEMINI_API_KEY to "
         "Streamlit Community Cloud's app Secrets."
     )
     st.stop()
 
-client = OpenAI(api_key=api_key)
+client = genai.Client(api_key=api_key)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -78,14 +79,13 @@ if question := st.chat_input("Type your question"):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                response = client.responses.create(
+                response = client.interactions.create(
                     model=MODEL_NAME,
-                    instructions=instructions,
-                    input=question,
+                    input=f"{instructions}\n\nUser question: {question}",
                 )
                 answer = response.output_text
-            except OpenAIError as error:
-                st.error(f"Could not get a response from OpenAI: {error}")
+            except APIError as error:
+                st.error(f"Could not get a response from Gemini: {error}")
                 st.stop()
         st.markdown(answer)
 
