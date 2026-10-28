@@ -1,78 +1,92 @@
-import os
 import re
-import ollama
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from pathlib import Path
 
-app = Flask(__name__)
-# Enable CORS so your local HTML webpage can safely talk to this backend
-CORS(app)
+import streamlit as st
+from openai import OpenAI, OpenAIError
+from streamlit.errors import StreamlitSecretNotFoundError
 
-MODEL_NAME = "llama3.2"
+MODEL_NAME = "gpt-4o-mini"
+APP_DIR = Path(__file__).resolve().parent
 
-def load_documents():
+st.set_page_config(page_title="mytaller.info AI assistant")
+st.title("mytaller.info AI assistant")
+st.caption("Ask about the neighborhood watch or room rentals.")
+
+
+def load_documents() -> list[str]:
     documents = []
-    files = ["security.txt", "rental.txt"]
-    for file in files:
-        if os.path.exists(file):
-            with open(file, "r", encoding="utf-8") as f:
-                # Split text by paragraphs to make chunks
-                chunks = [p.strip() for p in f.read().split("\n\n") if p.strip()]
-                documents.extend(chunks)
+    for filename in ("security.txt", "rental.txt"):
+        path = APP_DIR / filename
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            documents.extend(
+                paragraph.strip()
+                for paragraph in text.split("\n\n")
+                if paragraph.strip()
+            )
     return documents
 
-def find_most_relevant_context(user_query, docs):
-    query_words = set(re.findall(r'\w+', user_query.lower()))
-    best_match_idx = 0
-    highest_score = -1
-    
-    for idx, doc in enumerate(docs):
-        doc_words = set(re.findall(r'\w+', doc.lower()))
-        matching_words = query_words.intersection(doc_words)
-        score = len(matching_words)
-        
-        if score > highest_score:
-            highest_score = score
-            best_match_idx = idx
-            
-    return docs[best_match_idx] if docs else ""
 
-# Define the web API endpoint that your JavaScript fetches
-@app.route('/ask', methods=['POST'])
-def ask_ai():
-    data = request.get_json()
-    user_question = data.get("question", "")
-    
-    if not user_question:
-        return jsonify({"answer": "Please ask a valid question."}), 400
-    
-    # 1. Dynamically reload text files in case you update them
-    documents = load_documents()
-    if not documents:
-        return jsonify({"answer": "Error: Local knowledge base files are empty."}), 500
-        
-    # 2. Match keywords
-    matched_context = find_most_relevant_context(user_question, documents)
-    
-    # 3. Construct prompt for Ollama
-    system_prompt = (
-        f"You are a helpful assistant for the website mytaller.info.\n"
-        f"Answer the user's question using ONLY this context: {matched_context}\n"
-        f"If the answer isn't in the context, say you don't know."
+def find_most_relevant_context(user_query: str, docs: list[str]) -> str:
+    query_words = set(re.findall(r"\w+", user_query.lower()))
+    if not docs:
+        return ""
+    return max(
+        docs,
+        key=lambda doc: len(
+            query_words.intersection(re.findall(r"\w+", doc.lower()))
+        ),
     )
-    
-    try:
-        # 4. Generate local response
-        ai_response = ollama.generate(
-            model=MODEL_NAME,
-            system=system_prompt,
-            prompt=user_question
-        )
-        return jsonify({"answer": ai_response['response']})
-        
-    except Exception as e:
-        return jsonify({"answer": f"Error running local model: {str(e)}"}), 500
 
-if __name__ == '__main__':
-    print("Starting mytaller.info local AI backend on http://127.0.0.1:5000 ...")
-    app.run(port=5000, debug=True)
+
+documents = load_documents()
+if not documents:
+    st.error("The knowledge base is empty. Add content to security.txt or rental.txt.")
+    st.stop()
+
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+except (KeyError, StreamlitSecretNotFoundError):
+    st.error(
+        "OpenAI API key is not configured. Add OPENAI_API_KEY to "
+        "Streamlit Community Cloud's app Secrets."
+    )
+    st.stop()
+
+client = OpenAI(api_key=api_key)
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if question := st.chat_input("Type your question"):
+    st.session_state.messages.append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    context = find_most_relevant_context(question, documents)
+    instructions = (
+        "You are a helpful assistant for mytaller.info. Answer using only the "
+        "provided context. If the context does not contain the answer, say you "
+        "don't know.\n\n"
+        f"Context:\n{context}"
+    )
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                response = client.responses.create(
+                    model=MODEL_NAME,
+                    instructions=instructions,
+                    input=question,
+                )
+                answer = response.output_text
+            except OpenAIError as error:
+                st.error(f"Could not get a response from OpenAI: {error}")
+                st.stop()
+        st.markdown(answer)
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})

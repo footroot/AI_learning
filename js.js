@@ -30,8 +30,8 @@ async function sendMessage() {
     chatMessages.appendChild(loadingDiv);
 
     try {
-        // 3. Send query to our future Python Backend Server
-        const response = await fetch('http://127.0.0.1:5000/ask', {
+        // Use the current host so this works through Codespaces port forwarding.
+        const response = await fetch('/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question: query })
